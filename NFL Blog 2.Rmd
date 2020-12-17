@@ -1,0 +1,181 @@
+---
+title: "NFL Blog 2: Analyzing Daniel Jones' decision making"
+output: html_notebook
+---
+#### Laura Stickells
+#### November 8, 2020
+
+```{r}
+library(nflfastR)
+library(tidyverse)
+library(xlsx)
+library(ggplot2)
+library(dplyr)
+library(ggimage)
+library(ggthemes)
+library(scales)
+library(DT)
+```
+#
+Load play by play data
+```{r}
+pbp20 <- readRDS(url('https://raw.githubusercontent.com/guga31bb/nflfastR-data/master/data/play_by_play_2020.rds'))
+pbp19 <- readRDS(url('https://raw.githubusercontent.com/guga31bb/nflfastR-data/master/data/play_by_play_2019.rds'))
+
+#Takes about 45 seconds
+seasons <- 1999:2020
+pbp <- map_df(seasons, function(x) {
+  readRDS(url(paste0("https://raw.githubusercontent.com/guga31bb/nflfastR-data/master/data/play_by_play_",x,".rds")))
+})
+```
+
+#
+Ball security and sacks by quarterback. Percentages calculated based on total number of dropbacks including sacks and scrambles. (turnover percentage, total turnovers, interception percentage, total interceptions, quarterback fumble percentage, total quarterback fumbles, quarterback fumbles lost percentage, total quarterback fumbles lost, sack percentage, total sacks, number of dropbacks )
+```{r}
+to_pct <- pbp %>%
+  filter(season == 2020, epa != 0, passer != 'NA') %>%
+  mutate(
+    qb_fumble = case_when(
+      fumbled_1_player_name == passer ~ 1,
+      fumbled_1_player_name != passer ~ 0,
+      is.na(fumbled_1_player_name) ~ 0
+    ),
+    qb_fumble_lost = case_when(
+      qb_fumble == 1 & fumble_lost == 1 ~ 1,
+      TRUE ~ 0
+    )
+  ) %>%
+  group_by(passer, passer_id) %>% 
+  summarize(
+    to_pct = round((mean(interception)+mean(qb_fumble_lost))*100, digits = 2),
+    to = sum(interception)+sum(qb_fumble_lost),
+    int_pct = round(mean(interception)*100, digits = 2),
+    int = sum(interception),
+    fum_pct = round(mean(qb_fumble)*100, digits = 2),
+    fum = sum(qb_fumble),
+    fum_lost_pct = round(mean(qb_fumble_lost)*100, digits = 2),
+    fum_lost = sum(qb_fumble_lost),
+    sack_pct = round(mean(sack)*100, digits = 2),
+    sacks = sum(sack),
+    plays = n(),
+  )  %>%
+  select(-passer_id) %>%
+  filter(plays >= 100) %>%
+  arrange(to_pct)
+
+table <- datatable(to_pct,
+          caption = 'Daniel Jones is highlighted in yellow. Data from NFLfastR.',
+          colnames = c("", "Quarterback", "Turnover\nPercentage", "Turnovers", "Interception\nPercentage", "Interceptions", "Fumble\nPercentage", "Fumbles", "Fumbles\nLost\nPercentage", "Fumbles\nLost", "Sack\nPercentage", "Sacks", "Dropbacks"),
+          options = list(scrollX = TRUE),
+          width = 800,
+          class = 'cell-border stripe'
+          ) %>% 
+  formatStyle(
+  'passer',
+  target = 'row',
+  backgroundColor = styleEqual(c('D.Jones'), c('lightyellow'))
+)
+
+table
+
+```
+
+#
+I switched out Daniel Jones for a few other QBs (Russell Wilson, Tom Brady, Aaron Rodgers and Drew Lock) to make sure different QBs had distinct enough plots to be making observations.
+```{r}
+quarterback_dropbacks <- pbp %>%
+  mutate(
+    passer = case_when(
+      passer == 'D.Jones' ~ 'Daniel Jones',
+      passer != 'D.Jones' ~ 'Other QBs'
+      ),
+    passer = factor(passer)
+  ) %>%
+  filter(cp != 'NA', season == 2020) %>%
+  select(cp, interception, passer, week)
+
+interceptions_only <- quarterback_dropbacks %>%
+  filter(interception == 1, passer == 'Daniel Jones')
+
+quarterback_dropbacks %>%
+  ggplot(aes(x= cp, fill = passer)) +
+  geom_density(alpha = .7) +
+  geom_rug(data = interceptions_only, aes(x = cp, y = 0, color = passer), position = position_jitter(height = 0), show.legend = F, length = unit(0.05, "npc")) +
+  ggthemes::theme_fivethirtyeight() +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    strip.text = element_text(face = "bold"),
+    axis.title = element_text()
+    ) +
+  labs(
+    x = "Completion Probability",
+    y = "Density",
+    title = "Distribution of Daniel Jones' completion probability\ncompared to the rest of the league",
+    subtitle = "Interceptions are represented as red tick marks on the x-axis",
+    caption = "Data: @nflfastR | Plot: @LauraStickells"
+  )
+
+```
+
+#
+A linear model using league wide completion probability to predict interceptions. I didn't do any predictive analysis, so I don't expect these models to perfectly predict future interceptions. I was using them more to understand the past relationship between completion probability and interceptions with a Y-intercept.
+```{r}
+passers <- pbp20 %>%
+  filter(passer != 'NA', cp != 'NA')
+passers_model <- lm(passers$interception ~ passers$cp)
+summary.lm(passers_model)
+```
+
+#
+A linear model using Daniel Jones' completion probability to predict interceptions.
+```{r}
+daniel_jones <- pbp20 %>%
+  filter(passer == 'D.Jones', cp != 'NA')
+daniel_jones_model <- lm(daniel_jones$interception ~ daniel_jones$cp)
+summary.lm(daniel_jones_model)
+```
+
+#
+Graphing the two linear models against eachother.
+```{r}
+passers$model <- "League Average"
+daniel_jones$model <- "Daniel Jones"
+
+linear_models <- rbind(passers, daniel_jones)
+
+ggplot(linear_models, aes(x = cp, y = interception, group=model, color =model)) + 
+  stat_smooth(method = "lm", geom = "line", alpha = 0.5, se = FALSE, size = 1) +
+  ggthemes::theme_fivethirtyeight() +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    strip.text = element_text(face = "bold"),
+    axis.title = element_text()
+    ) +
+  labs(
+    x = "Completion Probability",
+    y = "Interception Probability",
+    title = "Correlation between completion probability\nand interceptions",
+    subtitle = "",
+    caption = "Data: @nflfastR | Plot: @LauraStickells"
+  )
+```
+
+#
+This table calculating the correlation between completion probability and interceptions doesn't mean much without looking at the y-intercepts, but the results provide some interesting insights, which could be an interesting area for future exploration.
+```{r}
+pbp20 %>%
+  filter(passer != 'NA', cp != 'NA') %>%
+  group_by(passer) %>%
+  summarize(
+    cor = cor(cp, interception), 
+    plays = n(), 
+  ) %>%
+  filter(plays >= 100) %>%
+  arrange(cor) %>%
+  ungroup()
+```
+
+#
+#
