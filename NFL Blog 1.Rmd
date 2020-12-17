@@ -1,0 +1,285 @@
+---
+title: "NFL Blog 1"
+output: html_notebook
+---
+
+https://jthomasmock.github.io/nfl_plotting_cookbook/
+
+```{r}
+library(nflfastR)
+library(tidyverse)
+library(xlsx)
+library(ggplot2)
+library(dplyr)
+library(ggimage)
+library(ggthemes)
+library(scales)
+source('NFL Graph Theme.R')
+```
+
+Load play by play data from 2019 and 2020
+```{r}
+pbp19 <- readRDS(url('https://raw.githubusercontent.com/guga31bb/nflfastR-data/master/data/play_by_play_2019.rds'))
+pbp20 <- readRDS(url('https://raw.githubusercontent.com/guga31bb/nflfastR-data/master/data/play_by_play_2020.rds'))
+
+#Takes about 45 seconds
+seasons <- 1999:2020
+pbp <- map_df(seasons, function(x) {
+  readRDS(url(paste0("https://raw.githubusercontent.com/guga31bb/nflfastR-data/master/data/play_by_play_",x,".rds")))
+})
+```
+
+Break down first down percentage by team, down and play type.
+```{r}
+first_down_pct_20 <- pbp20 %>%
+  filter(rush == 1 | pass == 1) %>%
+  filter(down <= 3) %>%
+  filter(posteam != 'NA') %>%
+  select(posteam, down, desc, pass, first_down, success, yards_gained) %>%
+  mutate(
+    play = case_when(
+      pass == 1 ~ 'pass',
+      pass == 0 ~ 'rush',
+    )
+  ) %>%
+  group_by(posteam, down, play) %>%
+  summarize(
+    first_down_rate = mean(first_down), plays=n()
+  )
+```
+
+Lets graph it.
+```{r}
+ggplot(first_down_pct_20, aes(x=down, y=first_down_rate, fill=play)) + 
+    geom_bar(position=position_dodge(), stat="identity") +
+    ggtitle("Down success by team") +
+    facet_wrap(~posteam, scale='free_x', nrow = 2)
+```
+
+Alright, lets start by looking at the holy grail of football analytics — rushing on first down.
+
+How often are they rushing on first down by quarter? Looks like it's fairly equivalent across the board, but epa is terrible in the second half. Let's see if it's rushing or passing or both
+```{r}
+LAC_first_down_passing_x_quarter <- pbp20 %>%
+  filter(rush == 1 | pass == 1, down == 1, !is.na(epa), posteam == 'LAC') %>%
+  select(qtr, down, desc, pass, first_down, success, yards_gained, epa) %>%
+  group_by(qtr) %>%
+  summarize(
+    pass_pct = sum(pass)/n(),
+    epa = mean(epa), 
+    ypc = mean(yards_gained), 
+    avg_success = mean(success), 
+    n_plays = n()
+  ) %>%
+  ungroup()
+
+LAC_first_down_success_x_quarter <- pbp20 %>%
+  filter(rush == 1 | pass == 1, down == 1, !is.na(epa), posteam == 'LAC') %>%
+  select(qtr, down, desc, pass, first_down, success, yards_gained, epa) %>%
+  mutate(
+    play = case_when(
+      pass == 1 ~ 'pass',
+      pass == 0 ~ 'rush',
+    )
+  ) %>%
+  group_by(qtr, play) %>%
+  summarize(
+    epa = mean(epa), 
+    ypc = mean(yards_gained), 
+    avg_success = mean(success), 
+    n_plays = n()
+  ) %>%
+  ungroup()
+```
+
+Who is rushing the best on on each down? The only player with a positive epa is Justin Jackson and Austin Ekeler who is out.
+```{r}
+LAC_first_down_rushing_x_player <- pbp20 %>%
+  filter(rush == 1, down <= 4, !is.na(epa), !is.na(rusher_player_id), posteam == 'LAC') %>%
+  select(down, desc, pass, first_down, success, yards_gained, epa, rusher_player_id, rusher_player_name, posteam) %>%
+  group_by(rusher_player_id, rusher_player_name, down) %>%
+  summarize(
+    epa = mean(epa), 
+    ypc = mean(yards_gained), 
+    avg_success = mean(success), 
+    n_plays = n()
+  ) %>%
+  ungroup() %>%
+  filter(n_plays >= 2) %>%
+  select(-rusher_player_id) %>%
+  arrange(-ypc)
+```
+
+Just checking the description of Jackson's plays. The reason he's so productive right now on second down is because he got loose in the first quarter against NO on a 36 yard rush.
+```{r}
+Justin_Jackson <- pbp20 %>%
+  filter(rush == 1, down <= 4, !is.na(epa), !is.na(rusher_player_id), posteam == 'LAC', rusher_player_name == 'J.Jackson') %>%
+  select(qtr, down, ydstogo, yrdln, score_differential, desc, yards_gained)
+```
+
+Now lets look at the Chargers passing and rushing numbers per down with Herbert at QB. Yikes. This is bad, esp on first down.
+```{r}
+
+Justin_Herbert <- pbp20 %>%
+  filter(rush == 1 | pass == 1, down <= 4, !is.na(epa), posteam == 'LAC', week >= 2) %>%
+  select(down, desc, rush, qb_scramble, air_epa, sack, success, yards_gained, epa, posteam, incomplete_pass, air_epa, comp_air_epa, week, qtr) %>%
+  mutate(
+    play = case_when(
+      rush == 1 ~ 'rush',
+      qb_scramble == 1 ~ 'rush',
+      air_epa != 0 ~ 'pass',
+      sack == 1 ~ 'sack',
+      TRUE ~ 'penalty'
+    )
+  ) %>%
+   mutate(
+    complete = case_when(
+      comp_air_epa != 0 ~ 1,
+      comp_air_epa == 0 ~ 0
+    )
+  ) %>%
+  group_by(play, down) %>%
+  summarize(
+    epa = mean(epa), 
+    avg_yards = mean(yards_gained), 
+    avg_success = mean(success), 
+    comp_pct =  1-(sum(incomplete_pass)/n()),
+    n_plays = n(),
+  ) %>%
+  filter(play == 'rush' | play == 'pass') %>%
+  ungroup()
+```
+
+OMG. The Chargers are second worst in the NFL on first downs. But they are actually ranked 6 on third downs and 18 on second in epa.
+```{r}
+Down_Success_By_Team <- pbp20 %>%
+  filter(rush == 1 | pass == 1, down == 3, !is.na(epa)) %>%
+  select(down, desc, pass, qb_scramble, air_epa, sack, success, yards_gained, epa, posteam, incomplete_pass, air_epa, comp_air_epa, week, qtr) %>%
+  group_by(posteam) %>%
+  summarize(
+    epa = mean(epa), 
+    avg_yards = mean(yards_gained), 
+    avg_success = mean(success),
+    n_plays = n(),
+    pct_pass = (mean(pass)-mean(qb_scramble)-mean(sack))
+  ) %>%
+  ungroup()
+
+Down_Success_By_Team <- Down_Success_By_Team %>%
+  left_join(teams_colors_logos, by = c('posteam' = 'team_abbr'))
+```
+
+Graph :)
+```{r}  
+asp_ratio <- 1.618
+
+ggplot(Down_Success_By_Team, aes(x= avg_success, y=epa)) +
+    geom_image(aes(image = team_logo_wikipedia), size = 0.035, by = "width", asp = asp_ratio) +
+  scale_fill_identity(aesthetics = c("fill", "colour")) +
+  theme_fivethirtyeight() +
+  theme(
+    axis.title = element_text(),
+    aspect.ratio = 1/asp_ratio
+  ) + 
+  geom_hline(yintercept = mean(Down_Success_By_Team$epa), color = "red", linetype = "dashed") +
+  geom_vline(xintercept =  mean(Down_Success_By_Team$avg_success), color = "red", linetype = "dashed") +
+  labs(
+    x = "Success Rate",
+    y = "Expected Points Added",
+    title = "Team EPA and Success Rate on First Down",
+    subtitle = "Peep the Chargers on the bottom left",
+    caption = "Data: @nflfastR | Plot: @LauraStickells"
+  )
+
+
+
+```
+
+What exactly are they doing on first downs though that are making them so inefficient. Well, to start they are passing on first down only 51% of the time. That's fourth lowest in the league. The league average is 58%.
+
+Since week two and starting Justin Herbert, the Chargers go to play on first and long is a Joshua Kelly Rush
+
+
+Let's find the hope in the passing game.
+```{r}
+
+JustinHerbertRecievers <- pbp20 %>%
+  filter(pass == 1, down <= 4, !is.na(epa), posteam == 'LAC', week >= 2, !is.na(receiver_player_name)) %>%
+  select(down, desc, pass, success, yards_gained, epa, posteam, receiver_player_name, incomplete_pass) %>%
+  group_by(down, receiver_player_name) %>%
+  summarize(
+    epa = mean(epa), 
+    avg_yards = mean(yards_gained), 
+    avg_success = mean(success), 
+    n_plays = n(),
+    completion_percentage = 1-mean(incomplete_pass)
+  ) %>%
+  filter(n_plays >= 3) %>%
+  arrange(-epa) %>%
+  ungroup()
+```
+
+
+Other stuff I did this week.
+
+Break down NE's first down percentage by season, down and play type.
+```{r}
+NE_first_down_pct <- pbp %>%
+  filter(season >= 2009) %>%
+  filter(posteam == 'NE') %>%
+  filter(rush == 1 | pass == 1) %>%
+  filter(down <= 3) %>%
+  select(season, down, desc, pass, first_down, success, yards_gained) %>%
+  mutate(
+    play = case_when(
+      pass == 1 ~ 'pass',
+      pass == 0 ~ 'rush',
+    )
+  ) %>%
+  group_by(season, down, play) %>%
+  summarize(
+    first_down_rate = mean(first_down), plays=n()
+  )
+```
+Lets graph it
+```{r}
+ggplot(NE_first_down_pct, aes(x=down, y=first_down_rate, fill=play)) + 
+    geom_bar(position=position_dodge(), stat="identity") +
+    ggtitle("NE's down success by season") +
+    facet_wrap(~season, scale='free_x', nrow = 1)
+```
+New England is converting more on earlier downs than it has in the past ___ seasons. It also has the highest rushing success on third downs since 2012.
+
+Most teams find the most success out of 11 personnel.
+NE had the second highest out of 21 personnel in 2018 (36%), took it back in (18% in 2019, still fifth most in the league) and in 2020 back up to 33% for the third highest
+
+Josh Kelly Rushing: Averaging 2.97 on first down rushes for 
+```{r}
+josh_kelly_rushing <- pbp20 %>%
+  filter(rusher_player_name == 'J.Kelley', rush == 1, down <= 4, !is.na(epa), posteam == 'LAC') %>%
+  select(down, desc, pass, first_down, success, yards_gained, epa) %>%
+  group_by(down) %>%
+  summarize(
+    mean(epa), mean(yards_gained), mean(success), plays=n()
+  )
+```
+
+Let's take a look at all rushers and where they sit on first down rushes.
+```{r}
+first_down_rushing <- pbp20 %>%
+  filter(rush == 1, down == 1, !is.na(epa), !is.na(rusher_player_id)) %>%
+  select(down, desc, pass, first_down, success, yards_gained, epa, rusher_player_id, rusher_player_name, posteam) %>%
+  group_by(rusher_player_id, rusher_player_name, posteam) %>%
+  summarize(
+    epa = mean(epa), 
+    ypc = mean(yards_gained), 
+    avg_success = mean(success), 
+    n_plays = n()
+  ) %>%
+  ungroup() %>%
+  filter(n_plays >= 10) %>%
+  arrange(-ypc)
+```
+
+
+
